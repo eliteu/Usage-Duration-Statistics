@@ -157,7 +157,7 @@ class GameUsageTracker:
                 # 备用方案：HTTP 请求
                 import requests
                 try:
-                    response = requests.post('http://localhost:5001/api/trigger-update', timeout=1)
+                    response = requests.post('https://devicetime.aimaker.space/api/trigger-update', timeout=1)
                     if response.status_code == 200:
                         logger.info("✅ 成功触发实时更新（HTTP）")
                 except:
