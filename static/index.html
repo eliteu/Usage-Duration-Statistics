@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>游戏设备使用时长统计</title>
+    <title>AI 互动展示框使用时长统计</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {
@@ -443,8 +443,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎮 游戏设备使用时长统计</h1>
-            <p>实时监控游戏设备使用情况</p>
+            <h1>AI 互动展示框使用时长统计</h1>
+            <p>实时监控 AI 互动展示框使用情况</p>
         </div>
 
         <div class="stats-grid">
@@ -493,6 +493,17 @@
                 </div>
             </div>
 
+            <div class="date-selector" style="margin-top: 10px;">
+                <label>筛选条件：</label>
+                <select id="filterCampus" onchange="onCampusChange()" style="width: 180px;">
+                    <option value="">全部校区</option>
+                </select>
+                <select id="filterProject" onchange="updateChart()" style="width: 180px;">
+                    <option value="">全部项目</option>
+                </select>
+                <button onclick="clearFilters()" style="margin-left: 10px;">清除筛选</button>
+            </div>
+
             <!-- 时间段统计摘要 -->
             <div id="periodSummary" class="stats-grid" style="margin: 20px 0; display: none;">
                 <div class="stat-card">
@@ -519,7 +530,7 @@
         </div>
 
         <div class="section">
-            <h2>🖥️ 设备实时状态</h2>
+            <h2>AI 互动展示框实时状态</h2>
             <div style="margin-bottom: 15px;">
                 <span class="status-indicator playing"></span>使用中
                 <span class="status-indicator online" style="margin-left: 20px;"></span>在线
@@ -531,7 +542,7 @@
         </div>
 
         <div class="section">
-            <h2>玩家排行榜</h2>
+            <h2>使用时长排行榜</h2>
             <button class="refresh-btn" onclick="loadData()">🔄 刷新数据</button>
             <div id="playersLoading" class="loading">加载中...</div>
             <table id="playersTable" style="display: none;">
@@ -572,7 +583,15 @@
     </div>
 
     <script>
-        const API_BASE = 'https://devicetime.aimaker.space/api';
+        // 自动识别 API 地址：本地开发使用 localhost，生产环境使用正式域名
+        const API_BASE = (function() {
+            const hostname = window.location.hostname;
+            if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0') {
+                return 'http://localhost:5001/api';
+            } else {
+                return 'https://devicetime.aimaker.space/api';
+            }
+        })();
         let usageChart = null;
         let deleteCallback = null;
 
@@ -694,6 +713,66 @@
             }
         }
 
+        var campusProjectsData = null;
+
+        async function loadCampusProjects() {
+            try {
+                const response = await fetch(`${API_BASE}/campus-projects`);
+                const result = await response.json();
+                if (result.success) {
+                    campusProjectsData = result.data;
+                    
+                    // 填充校区下拉框
+                    const campusSelect = document.getElementById('filterCampus');
+                    campusSelect.innerHTML = '<option value="">全部校区</option>';
+                    result.data.campuses.forEach(campus => {
+                        const option = document.createElement('option');
+                        option.value = campus;
+                        option.textContent = campus;
+                        campusSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('加载校区和项目列表失败:', error);
+            }
+        }
+
+        function onCampusChange() {
+            const campusSelect = document.getElementById('filterCampus');
+            const projectSelect = document.getElementById('filterProject');
+            const selectedCampus = campusSelect.value;
+            
+            // 清空项目列表
+            projectSelect.innerHTML = '<option value="">全部项目</option>';
+            
+            if (campusProjectsData && selectedCampus) {
+                // 根据选择的校区填充项目列表
+                const projects = campusProjectsData.campus_projects[selectedCampus] || [];
+                projects.forEach(project => {
+                    const option = document.createElement('option');
+                    option.value = project;
+                    option.textContent = project;
+                    projectSelect.appendChild(option);
+                });
+            } else if (campusProjectsData) {
+                // 如果没有选择校区，显示所有项目
+                campusProjectsData.projects.forEach(project => {
+                    const option = document.createElement('option');
+                    option.value = project;
+                    option.textContent = project;
+                    projectSelect.appendChild(option);
+                });
+            }
+            
+            updateChart();
+        }
+
+        function clearFilters() {
+            document.getElementById('filterCampus').value = '';
+            document.getElementById('filterProject').value = '';
+            onCampusChange(); // 更新项目列表
+        }
+
         async function loadChart() {
             try {
                 console.log('Loading chart data...');
@@ -701,20 +780,34 @@
                 // 构建 API URL
                 let url = `${API_BASE}/daily-chart`;
                 const chartPeriod = document.getElementById('chartPeriod').value;
+                const params = new URLSearchParams();
 
                 if (chartPeriod === 'custom') {
                     const startDate = document.getElementById('startDate').value;
                     const endDate = document.getElementById('endDate').value;
 
                     if (startDate && endDate) {
-                        url += `?start_date=${startDate}&end_date=${endDate}`;
+                        params.append('start_date', startDate);
+                        params.append('end_date', endDate);
                     } else {
                         alert('请选择开始和结束日期');
                         return;
                     }
                 } else {
-                    url += `?days=${chartPeriod}`;
+                    params.append('days', chartPeriod);
                 }
+
+                // 添加筛选条件
+                const campus = document.getElementById('filterCampus').value;
+                const project = document.getElementById('filterProject').value;
+                if (campus) {
+                    params.append('campus_name', campus);
+                }
+                if (project) {
+                    params.append('project_name', project);
+                }
+
+                url += '?' + params.toString();
 
                 const response = await fetch(url);
                 console.log('Chart response status:', response.status);
@@ -746,7 +839,22 @@
                     // 动态生成图表标题
                     const startDate = new Date(summary.start_date);
                     const endDate = new Date(summary.end_date);
-                    const chartTitle = `使用统计 (${startDate.toLocaleDateString('zh-CN')} - ${endDate.toLocaleDateString('zh-CN')})`;
+                    let chartTitle = `使用统计 (${startDate.toLocaleDateString('zh-CN')} - ${endDate.toLocaleDateString('zh-CN')})`;
+                    
+                    // 添加筛选条件到标题
+                    const filter = result.data.filter;
+                    if (filter && (filter.campus_name || filter.project_name)) {
+                        const filterParts = [];
+                        if (filter.campus_name) {
+                            filterParts.push(`校区: ${filter.campus_name}`);
+                        }
+                        if (filter.project_name) {
+                            filterParts.push(`项目: ${filter.project_name}`);
+                        }
+                        if (filterParts.length > 0) {
+                            chartTitle += ` [${filterParts.join(', ')}]`;
+                        }
+                    }
 
                     usageChart = new Chart(ctx, {
                         type: 'line',
@@ -823,8 +931,9 @@
             loadChart();
         }
 
-        // 处理图表时间范围选择
-        document.addEventListener('DOMContentLoaded', function () {
+        // 页面加载时初始化数据
+        document.addEventListener('DOMContentLoaded', async function () {
+            // 处理图表时间范围选择
             const chartPeriod = document.getElementById('chartPeriod');
             const customDateRange = document.getElementById('customDateRange');
 
@@ -843,6 +952,24 @@
                     updateChart();
                 }
             });
+
+            // 设置默认日期为今天
+            setToday();
+            // 先加载校区和项目列表
+            await loadCampusProjects();
+            // 初始化项目下拉框（显示所有项目）
+            if (campusProjectsData) {
+                const projectSelect = document.getElementById('filterProject');
+                projectSelect.innerHTML = '<option value="">全部项目</option>';
+                campusProjectsData.projects.forEach(project => {
+                    const option = document.createElement('option');
+                    option.value = project;
+                    option.textContent = project;
+                    projectSelect.appendChild(option);
+                });
+            }
+            // 加载所有数据
+            await loadData();
         });
 
         function showDeleteConfirm(type, id, name) {
@@ -887,8 +1014,14 @@
 
                 if (result.success) {
                     alert(`成功删除设备 "${playerName}"`);
-                    // 刷新相关数据
-                    loadData();
+                    // 强制刷新所有相关数据，特别是设备状态
+                    await Promise.all([
+                        loadStats(),
+                        loadDeviceStatus(),
+                        loadPlayers(),
+                        loadChart(),
+                        loadDailySummary()
+                    ]);
                 } else {
                     alert(`删除失败: ${result.error}`);
                 }
@@ -1047,12 +1180,6 @@
             ]);
         }
 
-        // 页面加载时初始化数据
-        document.addEventListener('DOMContentLoaded', function () {
-            // 设置默认日期为今天
-            setToday();
-            loadData();
-        });
 
         // 每30秒自动刷新数据
         setInterval(() => {

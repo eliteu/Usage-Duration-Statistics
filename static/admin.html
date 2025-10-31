@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>后台管理 - 设备注册表</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      padding: 24px 30px;
+      border-radius: 12px;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+    }
+    
+    .header h1 {
+      font-size: 24px;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    
+    .header p {
+      font-size: 14px;
+      opacity: 0.95;
+      margin-top: 8px;
+    }
+    
+    .header .nav-link {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 6px 12px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      color: #fff;
+      text-decoration: none;
+      font-size: 13px;
+      transition: background 0.3s;
+    }
+    
+    .header .nav-link:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    
+    .card-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid #f0f0f0;
+    }
+    
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    
+    .form-group {
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .form-group label {
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+    
+    .form-group input,
+    .form-group select {
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.3s, box-shadow 0.3s;
+    }
+    
+    .form-group input:focus,
+    .form-group select:focus {
+      outline: none;
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    }
+    
+    .form-hint {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px;
+    }
+    
+    .form-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #f0f0f0;
+    }
+    
+    button {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+    }
+    
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    
+    .btn-secondary {
+      background: #6c757d;
+      color: #fff;
+    }
+    
+    .btn-secondary:hover {
+      background: #5a6268;
+    }
+    
+    .btn-danger {
+      background: #dc3545;
+      color: #fff;
+      padding: 6px 12px;
+      font-size: 13px;
+    }
+    
+    .btn-danger:hover {
+      background: #c82333;
+    }
+    
+    .btn-success {
+      background: #28a745;
+      color: #fff;
+      padding: 6px 12px;
+      font-size: 13px;
+    }
+    
+    .btn-success:hover {
+      background: #218838;
+    }
+    
+    .search-bar {
+      display: flex;
+      gap: 12px;
+      align-items: end;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+      padding: 16px;
+      background: #f8f9fa;
+      border-radius: 8px;
+    }
+    
+    .search-bar .form-group {
+      flex: 1;
+      min-width: 150px;
+    }
+    
+    .search-bar button {
+      margin-left: auto;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+    }
+    
+    thead {
+      background: #f8f9fa;
+    }
+    
+    th {
+      padding: 12px;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 600;
+      color: #555;
+      border-bottom: 2px solid #e9ecef;
+    }
+    
+    td {
+      padding: 12px;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: 14px;
+      color: #333;
+    }
+    
+    tr:hover {
+      background: #f8f9fa;
+    }
+    
+    .status-badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    
+    .status-badge.active {
+      background: #d4edda;
+      color: #155724;
+    }
+    
+    .status-badge.disabled {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    
+    .code-badge {
+      background: #f0f0f0;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 13px;
+      color: #333;
+    }
+    
+    .actions {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .pagination {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid #f0f0f0;
+    }
+    
+    .pagination-info {
+      font-size: 13px;
+      color: #666;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #999;
+    }
+    
+    .empty-state svg {
+      width: 64px;
+      height: 64px;
+      margin-bottom: 16px;
+      opacity: 0.3;
+    }
+    
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+    
+    .alert-info {
+      background: #d1ecf1;
+      color: #0c5460;
+      border-left: 4px solid #17a2b8;
+    }
+    
+    .alert-warning {
+      background: #fff3cd;
+      color: #856404;
+      border-left: 4px solid #ffc107;
+    }
+    
+    @media (max-width: 768px) {
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .search-bar {
+        flex-direction: column;
+      }
+      
+      .search-bar button {
+        margin-left: 0;
+        width: 100%;
+      }
+      
+      table {
+        font-size: 12px;
+      }
+      
+      th, td {
+        padding: 8px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>📋 设备注册表管理</h1>
+      <p>配置 BLE 蓝牙ID 与校区/项目的映射关系</p>
+      <a href="/static/index.html" class="nav-link">← 返回数据看板</a>
+    </div>
+
+    <!-- 新增/编辑表单 -->
+    <div class="card">
+      <h2 class="card-title">新增/编辑设备映射</h2>
+      <form id="deviceForm" onsubmit="event.preventDefault(); createOrUpdate();">
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="bleIdInput">BLE ID *</label>
+            <input 
+              type="text" 
+              id="bleIdInput" 
+              placeholder="MicroBlocks ABC"
+              pattern="[Mm]icro[Bb]locks\s+[A-Za-z]{3}"
+              required
+            />
+            <div class="form-hint">格式：MicroBlocks + 空格 + 3个字母</div>
+          </div>
+          <div class="form-group">
+            <label for="campusInput">校区名称 *</label>
+            <input type="text" id="campusInput" placeholder="如：英荔总部" required />
+          </div>
+          <div class="form-group">
+            <label for="projectInput">项目名称 *</label>
+            <input type="text" id="projectInput" placeholder="如：娃娃机" required />
+          </div>
+          <div class="form-group">
+            <label for="statusInput">状态</label>
+            <select id="statusInput">
+              <option value="active">启用</option>
+              <option value="disabled">禁用</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 8px;">
+          <label for="remarkInput">备注</label>
+          <input type="text" id="remarkInput" placeholder="位置、用途等（可选）" />
+        </div>
+        
+        <div class="form-actions">
+          <button type="submit" class="btn-primary">💾 保存</button>
+          <button type="button" class="btn-secondary" onclick="resetForm()">🔄 清空</button>
+        </div>
+        
+        <div class="alert alert-info" style="margin-top: 16px;">
+          <strong>提示：</strong>保存后立即生效。MQTT 消息中的 BLE ID 将自动匹配，前端显示为"校区-项目"格式。
+        </div>
+      </form>
+    </div>
+
+    <!-- 查询和管理 -->
+    <div class="card">
+      <h2 class="card-title">设备列表</h2>
+      
+      <div class="search-bar">
+        <div class="form-group" style="flex: 2;">
+          <label for="qInput">搜索</label>
+          <input 
+            type="text" 
+            id="qInput" 
+            placeholder="按 BLE ID、校区或项目搜索..."
+            onkeypress="if(event.key==='Enter') reloadList()"
+          />
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label for="filterStatus">状态筛选</label>
+          <select id="filterStatus" onchange="reloadList()">
+            <option value="">全部状态</option>
+            <option value="active">启用</option>
+            <option value="disabled">禁用</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label for="perPage">每页显示</label>
+          <select id="perPage" onchange="reloadList()">
+            <option value="10">10 条</option>
+            <option value="20" selected>20 条</option>
+            <option value="50">50 条</option>
+          </select>
+        </div>
+        <button type="button" class="btn-primary" onclick="reloadList()">🔍 查询</button>
+      </div>
+
+      <div id="tableContainer">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 180px;">BLE ID</th>
+              <th style="width: 150px;">校区</th>
+              <th style="width: 150px;">项目</th>
+              <th style="width: 100px;">状态</th>
+              <th>备注</th>
+              <th style="width: 160px;">更新时间</th>
+              <th style="width: 120px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            <tr>
+              <td colspan="7" class="empty-state">加载中...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <div class="pagination-info" id="pagerInfo">--</div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-secondary" onclick="prevPage()">← 上一页</button>
+          <button class="btn-secondary" onclick="nextPage()">下一页 →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 自动识别 API 地址
+    var API_BASE = (function() {
+      const hostname = window.location.hostname;
+      if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0') {
+        return 'http://localhost:5001/api';
+      } else {
+        return 'https://devicetime.aimaker.space/api';
+      }
+    })();
+    
+    var currentPage = 1;
+
+    function fmtTime(s) {
+      if (!s) return '--';
+      const d = new Date(s);
+      return d.toLocaleString('zh-CN', { 
+        year: 'numeric', 
+        month: '2-digit', 
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+
+    async function createOrUpdate() {
+      const ble = document.getElementById('bleIdInput').value.trim();
+      const campus = document.getElementById('campusInput').value.trim();
+      const project = document.getElementById('projectInput').value.trim();
+      const status = document.getElementById('statusInput').value;
+      const remark = document.getElementById('remarkInput').value.trim();
+
+      if (!ble || !campus || !project) {
+        alert('⚠️ 请填写 BLE ID、校区和项目');
+        return;
+      }
+
+      const body = { ble_id: ble, campus_name: campus, project_name: project, status, remark };
+      
+      try {
+        const resp = await fetch(`${API_BASE}/device-registry`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        
+        const result = await resp.json();
+        
+        if (!result.success) {
+          // 如果创建失败（可能是已存在），尝试更新
+          await updateRegistry(ble, body);
+          showMessage('✅ 更新成功', 'success');
+        } else {
+          showMessage('✅ 保存成功', 'success');
+        }
+        
+        resetForm();
+        await reloadList();
+      } catch (e) {
+        // 如果网络错误，尝试更新
+        try {
+          await updateRegistry(ble, body);
+          showMessage('✅ 更新成功', 'success');
+          resetForm();
+          await reloadList();
+        } catch (e2) {
+          showMessage('❌ 保存失败: ' + e2.message, 'error');
+        }
+      }
+    }
+
+    async function updateRegistry(ble, body) {
+      const resp = await fetch(`${API_BASE}/device-registry/${encodeURIComponent(ble)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const result = await resp.json();
+      if (!result.success) {
+        throw new Error(result.error || '更新失败');
+      }
+    }
+
+    function resetForm() {
+      document.getElementById('deviceForm').reset();
+      document.getElementById('statusInput').value = 'active';
+    }
+
+    function showMessage(message, type) {
+      // 简单的消息提示
+      const alertDiv = document.createElement('div');
+      alertDiv.className = `alert alert-${type === 'success' ? 'info' : 'warning'}`;
+      alertDiv.textContent = message;
+      alertDiv.style.position = 'fixed';
+      alertDiv.style.top = '20px';
+      alertDiv.style.right = '20px';
+      alertDiv.style.zIndex = '10000';
+      alertDiv.style.minWidth = '200px';
+      document.body.appendChild(alertDiv);
+      setTimeout(() => alertDiv.remove(), 3000);
+    }
+
+    async function reloadList() {
+      const q = document.getElementById('qInput').value.trim();
+      const status = document.getElementById('filterStatus').value;
+      const perPage = document.getElementById('perPage').value;
+      const url = new URL(`${API_BASE}/device-registry`);
+      url.searchParams.set('page', String(currentPage));
+      url.searchParams.set('per_page', String(perPage));
+      if (q) url.searchParams.set('q', q);
+      if (status) url.searchParams.set('status', status);
+
+      try {
+        const resp = await fetch(url.toString());
+        const data = await resp.json();
+        
+        if (!data.success) {
+          showMessage('❌ 加载失败: ' + (data.error || 'unknown'), 'error');
+          return;
+        }
+        
+        const tbody = document.getElementById('tbody');
+        tbody.innerHTML = '';
+        
+        if (!data.data || data.data.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无数据</td></tr>';
+          return;
+        }
+        
+        data.data.forEach(item => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td><span class="code-badge">${item.ble_id}</span></td>
+            <td>${item.campus_name}</td>
+            <td>${item.project_name}</td>
+            <td><span class="status-badge ${item.status}">${item.status === 'active' ? '启用' : '禁用'}</span></td>
+            <td>${item.remark || '<span style="color: #999;">--</span>'}</td>
+            <td style="font-size: 12px; color: #666;">${fmtTime(item.updated_at)}</td>
+            <td>
+              <div class="actions">
+                <button class="btn-success" onclick='fillForm("${item.ble_id.replace(/"/g, '&quot;')}", "${item.campus_name.replace(/"/g, '&quot;')}", "${item.project_name.replace(/"/g, '&quot;')}", "${item.status}", "${(item.remark || '').replace(/"/g, '&quot;')}")'>编辑</button>
+                <button class="btn-danger" onclick='removeItem("${item.ble_id.replace(/"/g, '&quot;')}")'>删除</button>
+              </div>
+            </td>`;
+          tbody.appendChild(tr);
+        });
+        
+        document.getElementById('pagerInfo').textContent = `第 ${data.page} 页，共 ${data.per_page} 条`;
+      } catch (e) {
+        showMessage('❌ 加载失败: ' + e.message, 'error');
+      }
+    }
+
+    async function prevPage() {
+      if (currentPage > 1) {
+        currentPage--;
+        await reloadList();
+      }
+    }
+
+    async function nextPage() {
+      currentPage++;
+      await reloadList();
+    }
+
+    function fillForm(bleId, campusName, projectName, status, remark) {
+      document.getElementById('bleIdInput').value = bleId;
+      document.getElementById('campusInput').value = campusName;
+      document.getElementById('projectInput').value = projectName;
+      document.getElementById('statusInput').value = status;
+      document.getElementById('remarkInput').value = remark || '';
+      
+      // 滚动到表单位置
+      document.querySelector('.card:first-of-type').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    async function removeItem(ble) {
+      if (!confirm(`确定要删除映射 "${ble}" 吗？\n此操作不可撤销！`)) return;
+      
+      try {
+        const resp = await fetch(`${API_BASE}/device-registry/${encodeURIComponent(ble)}`, { 
+          method: 'DELETE' 
+        });
+        const result = await resp.json();
+        
+        if (!result.success) {
+          showMessage('❌ 删除失败: ' + (result.error || 'unknown'), 'error');
+          return;
+        }
+        
+        showMessage('✅ 删除成功', 'success');
+        await reloadList();
+      } catch (e) {
+        showMessage('❌ 删除失败: ' + e.message, 'error');
+      }
+    }
+
+    // 初始化
+    document.addEventListener('DOMContentLoaded', async () => {
+      await reloadList();
+    });
+  </script>
+</body>
+</html>

@@ -68,6 +68,8 @@ python api.py
 
 系统监听主题 `game`，支持以下消息格式：
 
+### 基础格式（向后兼容）
+
 **游戏开始：**
 ```json
 {
@@ -85,6 +87,39 @@ python api.py
     "playerName": "娃娃机（英荔总部）"
 }
 ```
+
+### 扩展格式（推荐，支持注册表映射）
+
+#### 方式 1：bleId + playerId/playerName（向后兼容）
+
+```json
+{
+    "event": "game_start",
+    "playerId": "备用设备ID",
+    "playerName": "备用设备名",
+    "bleId": "MicroBlocks ABC"
+}
+```
+
+#### 方式 2：仅 bleId（如果已在注册表中配置）
+
+如果 `bleId` 已在后台注册表中配置，可以**只提供 `bleId`**，系统会自动使用注册表的映射：
+
+```json
+{
+    "event": "game_start",
+    "bleId": "MicroBlocks ABC"
+}
+```
+
+**说明：**
+- `bleId` 字段是**可选的**：
+  - 如果提供了 `bleId` 且在注册表中找到映射，可以不提供 `playerId` 和 `playerName`
+  - 如果提供了 `bleId` 但未在注册表中，必须提供 `playerId` 和 `playerName` 作为后备
+  - 如果不提供 `bleId`，必须提供 `playerId` 和 `playerName`
+- 如果提供了 `bleId` 且在注册表中找到映射，前端会显示"校区-项目"格式的名称
+- 格式要求：`MicroBlocks` + 空格 + 3个字母（如 `MicroBlocks ABC`）
+- 详见 `BLE_ID_FORMAT.md`
 
 ## API 接口
 

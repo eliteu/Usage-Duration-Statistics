@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from flask import Flask, jsonify, request, send_from_directory, Response
 from flask_cors import CORS
 import json
@@ -5,15 +6,45 @@ import time
 import threading
 import queue
 
+import os
+from models import GameSession, DeviceStatus, DeviceRegistry, normalize_ble_id, db
+from datetime import datetime, timedelta, timezone
+import logging
+
 def format_datetime_for_frontend(dt):
-    """格式化日期时间为前端可用的格式"""
+    """格式化日期时间为前端可用的 ISO8601 UTC(Z) 字符串"""
     if dt is None:
         return None
-    # 确保返回 ISO 格式的 UTC 时间
-    return dt.isoformat() + 'Z' if not dt.isoformat().endswith('Z') else dt.isoformat()
-from models import GameSession, db
-from datetime import datetime, timedelta
-import logging
+    # 统一转为 UTC 并返回以 Z 结尾
+    dt = to_utc_datetime(dt)
+    return dt.isoformat().replace('+00:00', 'Z')
+
+def to_utc_datetime(value):
+    """将数据库取出的值规范为 UTC 有时区 datetime。
+    - 支持 datetime 或 str（ISO8601，可能带 Z）
+    - 对 naive datetime 视为 UTC
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value
+        # 处理以 Z 结尾的 UTC 字符串
+        if s.endswith('Z'):
+            s = s[:-1] + '+00:00'
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            # 回退常见格式
+            try:
+                dt = datetime.strptime(s, '%Y-%m-%d %H:%M:%S')
+            except Exception:
+                # 最后兜底：当前时间，避免崩溃（也可返回 None）
+                dt = datetime.now(timezone.utc)
+    else:
+        dt = value
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 app = Flask(__name__)
 CORS(app, origins=["*"])
@@ -25,6 +56,12 @@ clients = []
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 离线阈值（秒），默认 300
+try:
+    OFFLINE_WINDOW_SECONDS = int(os.environ.get('OFFLINE_WINDOW_SECONDS', '300'))
+except Exception:
+    OFFLINE_WINDOW_SECONDS = 300
 
 @app.before_request
 def before_request():
@@ -61,11 +98,130 @@ def get_sessions():
                 'id': session.id,
                 'player_id': session.player_id,
                 'player_name': session.player_name,
-                'start_time': session.start_time.isoformat() if session.start_time else None,
-                'end_time': session.end_time.isoformat() if session.end_time else None,
+                'start_time': format_datetime_for_frontend(session.start_time),
+                'end_time': format_datetime_for_frontend(session.end_time),
                 'duration_seconds': session.duration_seconds,
-                'created_at': session.created_at.isoformat()
+                'created_at': format_datetime_for_frontend(session.created_at)
             })
+        
+        return jsonify({
+            'success': True,
+            'data': result,
+            'page': page,
+            'per_page': per_page
+        })
+        
+    except Exception as e:
+        logger.error(f"获取会话列表时出错: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/device-registry', methods=['GET'])
+def list_device_registry():
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 20))
+        query_kw = request.args.get('q')
+        status = request.args.get('status')
+
+        q = DeviceRegistry.select().order_by(DeviceRegistry.updated_at.desc())
+        if query_kw:
+            kw = f"%{query_kw}%"
+            q = q.where((DeviceRegistry.ble_id.contains(query_kw)) | (DeviceRegistry.campus_name.contains(query_kw)) | (DeviceRegistry.project_name.contains(query_kw)))
+        if status:
+            q = q.where(DeviceRegistry.status == status)
+
+        items = q.paginate(page, per_page)
+        data = [{
+            'ble_id': item.ble_id,
+            'campus_name': item.campus_name,
+            'project_name': item.project_name,
+            'status': item.status,
+            'remark': item.remark,
+            'created_at': format_datetime_for_frontend(item.created_at),
+            'updated_at': format_datetime_for_frontend(item.updated_at)
+        } for item in items]
+
+        return jsonify({'success': True, 'data': data, 'page': page, 'per_page': per_page})
+    except Exception as e:
+        logger.error(f"查询设备注册表失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/device-registry', methods=['POST'])
+def create_device_registry():
+    try:
+        body = request.get_json(force=True) or {}
+        ble_id_raw = body.get('ble_id', '')
+        campus_name = body.get('campus_name', '')
+        project_name = body.get('project_name', '')
+        status = body.get('status', 'active')
+        remark = body.get('remark')
+
+        ble_id = normalize_ble_id(ble_id_raw)
+        if not ble_id or not campus_name or not project_name:
+            return jsonify({'success': False, 'error': 'ble_id/campus_name/project_name 不能为空'}), 400
+
+        now_utc = datetime.now(timezone.utc)
+        item = DeviceRegistry.create(
+            ble_id=ble_id,
+            campus_name=campus_name,
+            project_name=project_name,
+            status=status,
+            remark=remark,
+            created_at=now_utc,
+            updated_at=now_utc
+        )
+        return jsonify({'success': True, 'data': {
+            'ble_id': item.ble_id,
+            'campus_name': item.campus_name,
+            'project_name': item.project_name,
+            'status': item.status,
+            'remark': item.remark
+        }})
+    except Exception as e:
+        logger.error(f"创建设备注册记录失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/device-registry/<ble_id>', methods=['PUT'])
+def update_device_registry(ble_id):
+    try:
+        body = request.get_json(force=True) or {}
+        norm = normalize_ble_id(ble_id)
+        item = DeviceRegistry.get(DeviceRegistry.ble_id == norm)
+        updated = False
+        if 'campus_name' in body:
+            item.campus_name = body['campus_name']
+            updated = True
+        if 'project_name' in body:
+            item.project_name = body['project_name']
+            updated = True
+        if 'status' in body:
+            item.status = body['status']
+            updated = True
+        if 'remark' in body:
+            item.remark = body['remark']
+            updated = True
+        if updated:
+            item.updated_at = datetime.now(timezone.utc)
+            item.save()
+        return jsonify({'success': True})
+    except DeviceRegistry.DoesNotExist:
+        return jsonify({'success': False, 'error': '记录不存在'}), 404
+    except Exception as e:
+        logger.error(f"更新设备注册记录失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/device-registry/<ble_id>', methods=['DELETE'])
+def delete_device_registry(ble_id):
+    try:
+        norm = normalize_ble_id(ble_id)
+        item = DeviceRegistry.get(DeviceRegistry.ble_id == norm)
+        item.delete_instance()
+        return jsonify({'success': True})
+    except DeviceRegistry.DoesNotExist:
+        return jsonify({'success': False, 'error': '记录不存在'}), 404
+    except Exception as e:
+        logger.error(f"删除设备注册记录失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
         
         return jsonify({
             'success': True,
@@ -86,12 +242,14 @@ def get_stats():
         if date_str:
             target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
         else:
-            target_date = datetime.now().date()
+            target_date = datetime.now(timezone.utc).date()
         
         # 指定日期统计
+        day_start = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
+        day_end = day_start + timedelta(days=1)
         day_sessions = GameSession.select().where(
-            GameSession.start_time >= target_date,
-            GameSession.start_time < target_date + timedelta(days=1),
+            GameSession.start_time >= day_start,
+            GameSession.start_time < day_end,
             GameSession.duration_seconds.is_null(False)
         )
         
@@ -99,10 +257,12 @@ def get_stats():
         day_session_count = day_sessions.count()
         
         # 本周统计
-        week_start = target_date - timedelta(days=target_date.weekday())
+        week_start_date = target_date - timedelta(days=target_date.weekday())
+        week_start = datetime.combine(week_start_date, datetime.min.time(), tzinfo=timezone.utc)
+        week_end = week_start + timedelta(days=7)
         week_sessions = GameSession.select().where(
             GameSession.start_time >= week_start,
-            GameSession.start_time < week_start + timedelta(days=7),
+            GameSession.start_time < week_end,
             GameSession.duration_seconds.is_null(False)
         )
         
@@ -119,7 +279,7 @@ def get_stats():
         ).distinct()
         
         # 在线设备统计（最近5分钟内有活动的设备）
-        five_minutes_ago = datetime.now() - timedelta(minutes=5)
+        five_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=5)
         online_devices = GameSession.select(
             GameSession.player_id,
             GameSession.player_name
@@ -179,9 +339,9 @@ def get_players():
             if last_session:
                 # 使用最新的活动时间（开始时间或结束时间中较晚的）
                 if last_session.end_time:
-                    last_played = max(last_session.start_time, last_session.end_time)
+                    last_played = max(to_utc_datetime(last_session.start_time), to_utc_datetime(last_session.end_time))
                 else:
-                    last_played = last_session.start_time
+                    last_played = to_utc_datetime(last_session.start_time)
             
             result.append({
                 'player_id': player.player_id,
@@ -207,50 +367,69 @@ def get_players():
 def get_device_status():
     """获取设备实时状态"""
     try:
-        # 获取所有设备的最新状态
-        devices = []
-        
-        # 查询所有有记录的设备
-        all_devices = GameSession.select(
+        now_utc = datetime.now(timezone.utc)
+        devices_map = {}
+
+        # 先用 DeviceStatus 构建设备视图
+        for d in DeviceStatus.select():
+            last_seen = to_utc_datetime(d.last_seen)
+            latest_session = None
+            if d.current_session_id:
+                try:
+                    latest_session = GameSession.get_by_id(d.current_session_id)
+                except Exception:
+                    latest_session = None
+
+            status = "offline"
+            if latest_session is not None and latest_session.end_time is None and last_seen and (now_utc - last_seen).total_seconds() <= OFFLINE_WINDOW_SECONDS:
+                status = "playing"
+            elif last_seen and (now_utc - last_seen).total_seconds() <= OFFLINE_WINDOW_SECONDS:
+                status = "online"
+
+            devices_map[d.player_id] = {
+                'player_id': d.player_id,
+                'player_name': d.player_name,
+                'status': status,
+                'current_session_id': d.current_session_id,
+                'last_activity': format_datetime_for_frontend(last_seen)
+            }
+
+        # 用历史会话补全未入 DeviceStatus 的设备
+        all_session_devices = GameSession.select(
             GameSession.player_id,
             GameSession.player_name
         ).distinct()
-        
-        for device in all_devices:
-            # 查找最新的会话记录
+        for sdev in all_session_devices:
+            if sdev.player_id in devices_map:
+                continue
             latest_session = GameSession.select().where(
-                GameSession.player_id == device.player_id
+                GameSession.player_id == sdev.player_id
             ).order_by(GameSession.start_time.desc()).first()
-            
-            # 判断设备状态
+
+            last_activity = None
             status = "offline"
             current_session_id = None
-            last_activity = None
-            
             if latest_session:
-                # 使用最新的活动时间（开始时间或结束时间中较晚的）
                 if latest_session.end_time:
-                    last_activity = max(latest_session.start_time, latest_session.end_time)
+                    last_activity = max(to_utc_datetime(latest_session.start_time), to_utc_datetime(latest_session.end_time))
                 else:
-                    last_activity = latest_session.start_time
-                
+                    last_activity = to_utc_datetime(latest_session.start_time)
                 if latest_session.end_time is None:
-                    # 有未结束的会话，设备在线且使用中
                     status = "playing"
                     current_session_id = latest_session.id
                 else:
-                    # 检查最后活动时间，5分钟内算在线
-                    time_diff = datetime.now() - latest_session.end_time
-                    if time_diff.total_seconds() < 300:  # 5分钟
+                    if last_activity and (now_utc - last_activity).total_seconds() <= OFFLINE_WINDOW_SECONDS:
                         status = "online"
-            
-            devices.append({
-                'player_id': device.player_id,
-                'player_name': device.player_name,
+
+            devices_map[sdev.player_id] = {
+                'player_id': sdev.player_id,
+                'player_name': sdev.player_name,
                 'status': status,
                 'current_session_id': current_session_id,
                 'last_activity': format_datetime_for_frontend(last_activity)
-            })
+            }
+
+        devices = list(devices_map.values())
         
         # 统计各状态数量
         status_count = {
@@ -272,6 +451,38 @@ def get_device_status():
         logger.error(f"获取设备状态时出错: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/campus-projects', methods=['GET'])
+def get_campus_projects():
+    """获取所有校区和项目列表（用于筛选）"""
+    try:
+        # 获取所有活跃的注册表记录
+        registries = DeviceRegistry.select().where(DeviceRegistry.status == 'active')
+        
+        # 收集所有校区和项目
+        campuses = set()
+        projects = set()
+        campus_projects = {}  # {校区: [项目列表]}
+        
+        for reg in registries:
+            campuses.add(reg.campus_name)
+            projects.add(reg.project_name)
+            if reg.campus_name not in campus_projects:
+                campus_projects[reg.campus_name] = []
+            if reg.project_name not in campus_projects[reg.campus_name]:
+                campus_projects[reg.campus_name].append(reg.project_name)
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'campuses': sorted(list(campuses)),
+                'projects': sorted(list(projects)),
+                'campus_projects': {k: sorted(v) for k, v in campus_projects.items()}
+            }
+        })
+    except Exception as e:
+        logger.error(f"获取校区和项目列表失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/daily-chart', methods=['GET'])
 def get_daily_chart():
     """获取每日使用时长图表数据"""
@@ -279,6 +490,8 @@ def get_daily_chart():
         days = int(request.args.get('days', 7))  # 默认7天
         start_date_str = request.args.get('start_date')
         end_date_str = request.args.get('end_date')
+        campus_name = request.args.get('campus_name')
+        project_name = request.args.get('project_name')
         
         # 如果提供了具体的开始和结束日期
         if start_date_str and end_date_str:
@@ -287,8 +500,34 @@ def get_daily_chart():
             days = (end_date - start_date).days + 1
         else:
             # 使用默认的天数范围
-            end_date = datetime.now().date()
+            end_date = datetime.now(timezone.utc).date()
             start_date = end_date - timedelta(days=days-1)
+        
+        # 如果指定了校区或项目，需要找到匹配的设备标识列表
+        filter_player_ids = None
+        filter_player_names = None
+        if campus_name or project_name:
+            query = DeviceRegistry.select(DeviceRegistry.ble_id, DeviceRegistry.campus_name, DeviceRegistry.project_name).where(DeviceRegistry.status == 'active')
+            if campus_name:
+                query = query.where(DeviceRegistry.campus_name == campus_name)
+            if project_name:
+                query = query.where(DeviceRegistry.project_name == project_name)
+            
+            # 获取匹配的 ble_id 列表和对应的显示名称
+            matched_ble_ids = set()
+            matched_display_names = set()
+            for reg in query:
+                matched_ble_ids.add(reg.ble_id)
+                # 显示名称格式：校区-项目
+                matched_display_names.add(f"{reg.campus_name}-{reg.project_name}")
+            
+            if matched_ble_ids or matched_display_names:
+                filter_player_ids = matched_ble_ids
+                filter_player_names = matched_display_names
+            else:
+                # 如果没有找到匹配的注册表，但指定了筛选条件，返回空数据
+                filter_player_ids = set()
+                filter_player_names = set()
         
         chart_data = []
         total_period_time = 0
@@ -298,14 +537,28 @@ def get_daily_chart():
             current_date = start_date + timedelta(days=i)
             
             # 查询当天的会话数据
+            day_start = datetime.combine(current_date, datetime.min.time(), tzinfo=timezone.utc)
+            day_end = day_start + timedelta(days=1)
             day_sessions = GameSession.select().where(
-                GameSession.start_time >= current_date,
-                GameSession.start_time < current_date + timedelta(days=1),
+                GameSession.start_time >= day_start,
+                GameSession.start_time < day_end,
                 GameSession.duration_seconds.is_null(False)
             )
             
+            # 如果指定了筛选条件，过滤会话
+            if filter_player_ids is not None:
+                filtered_sessions = []
+                for session in day_sessions:
+                    # 匹配 player_id（可能是 ble_id）
+                    if session.player_id in filter_player_ids:
+                        filtered_sessions.append(session)
+                    # 或者匹配 player_name（可能是 "校区-项目" 格式）
+                    elif filter_player_names and session.player_name in filter_player_names:
+                        filtered_sessions.append(session)
+                day_sessions = filtered_sessions
+            
             total_time = sum(session.duration_seconds for session in day_sessions)
-            session_count = day_sessions.count()
+            session_count = len(day_sessions)
             
             total_period_time += total_time
             total_period_sessions += session_count
@@ -329,6 +582,10 @@ def get_daily_chart():
                     'total_time_hours': round(total_period_time / 3600, 2),
                     'total_sessions': total_period_sessions,
                     'avg_daily_minutes': round(total_period_time / 60 / days, 1) if days > 0 else 0
+                },
+                'filter': {
+                    'campus_name': campus_name,
+                    'project_name': project_name
                 }
             }
         })
@@ -342,15 +599,32 @@ def delete_device(player_id):
     """删除设备及其所有相关数据"""
     try:
         # 删除该设备的所有游戏会话记录
-        deleted_count = GameSession.delete().where(
+        deleted_sessions = GameSession.delete().where(
             GameSession.player_id == player_id
         ).execute()
         
-        logger.info(f"删除设备 {player_id} 的 {deleted_count} 条记录")
+        # 删除设备状态记录
+        deleted_status = DeviceStatus.delete().where(
+            DeviceStatus.player_id == player_id
+        ).execute()
+        
+        # 尝试删除设备注册表记录（如果存在，基于规范化后的 BLE ID）
+        # 注意：player_id 可能是规范化后的 BLE ID，也可能是原始 player_id
+        deleted_registry = 0
+        try:
+            # 如果 player_id 是 BLE ID 格式，尝试删除注册表
+            if player_id.startswith('MICROBLOCKS'):
+                deleted_registry = DeviceRegistry.delete().where(
+                    DeviceRegistry.ble_id == player_id
+                ).execute()
+        except Exception:
+            pass  # 如果删除注册表失败，不影响整体删除
+        
+        logger.info(f"删除设备 {player_id}: {deleted_sessions} 条会话, {deleted_status} 条状态, {deleted_registry} 条注册表")
         
         return jsonify({
             'success': True,
-            'message': f'成功删除设备 {player_id} 及其 {deleted_count} 条记录'
+            'message': f'成功删除设备 {player_id}：{deleted_sessions} 条会话记录，{deleted_status} 条状态记录，{deleted_registry} 条注册表记录'
         })
         
     except Exception as e:
@@ -383,7 +657,7 @@ def get_daily_summary():
     """获取按日期汇总的使用记录"""
     try:
         days = int(request.args.get('days', 7))  # 默认显示最近7天
-        end_date = datetime.now().date()
+        end_date = datetime.now(timezone.utc).date()
         start_date = end_date - timedelta(days=days-1)
         
         daily_summary = []
@@ -392,9 +666,11 @@ def get_daily_summary():
             current_date = start_date + timedelta(days=i)
             
             # 查询当天的会话数据
+            day_start = datetime.combine(current_date, datetime.min.time(), tzinfo=timezone.utc)
+            day_end = day_start + timedelta(days=1)
             day_sessions = GameSession.select().where(
-                GameSession.start_time >= current_date,
-                GameSession.start_time < current_date + timedelta(days=1)
+                GameSession.start_time >= day_start,
+                GameSession.start_time < day_end
             ).order_by(GameSession.start_time.desc())
             
             # 统计当天数据
@@ -409,9 +685,9 @@ def get_daily_summary():
                 device_id = session.player_id
                 if device_id not in active_devices:
                     # 计算初始的最后活动时间
-                    initial_last_activity = session.start_time
+                    initial_last_activity = to_utc_datetime(session.start_time)
                     if session.end_time:
-                        initial_last_activity = max(session.start_time, session.end_time)
+                        initial_last_activity = max(to_utc_datetime(session.start_time), to_utc_datetime(session.end_time))
                     
                     active_devices[device_id] = {
                         'player_name': session.player_name,
@@ -425,9 +701,9 @@ def get_daily_summary():
                     active_devices[device_id]['total_time'] += session.duration_seconds
                 
                 # 更新最后活动时间（考虑开始时间和结束时间）
-                session_last_activity = session.start_time
+                session_last_activity = to_utc_datetime(session.start_time)
                 if session.end_time:
-                    session_last_activity = max(session.start_time, session.end_time)
+                    session_last_activity = max(to_utc_datetime(session.start_time), to_utc_datetime(session.end_time))
                 
                 if session_last_activity > active_devices[device_id]['last_activity']:
                     active_devices[device_id]['last_activity'] = session_last_activity
@@ -511,41 +787,11 @@ def events():
 def get_latest_device_status():
     """获取最新设备状态"""
     try:
-        all_devices = GameSession.select(
-            GameSession.player_id,
-            GameSession.player_name
-        ).distinct()
-        
-        devices = []
-        for device in all_devices:
-            latest_session = GameSession.select().where(
-                GameSession.player_id == device.player_id
-            ).order_by(GameSession.start_time.desc()).first()
-            
-            status = "offline"
-            last_activity = None
-            
-            if latest_session:
-                if latest_session.end_time:
-                    last_activity = max(latest_session.start_time, latest_session.end_time)
-                else:
-                    last_activity = latest_session.start_time
-                
-                if latest_session.end_time is None:
-                    status = "playing"
-                else:
-                    time_diff = datetime.now() - latest_session.end_time
-                    if time_diff.total_seconds() < 300:
-                        status = "online"
-            
-            devices.append({
-                'player_id': device.player_id,
-                'player_name': device.player_name,
-                'status': status,
-                'last_activity': last_activity.isoformat() if last_activity else None
-            })
-        
-        return {'devices': devices}
+        # 复用 get_device_status 的逻辑
+        with app.test_request_context():
+            resp = get_device_status()
+            data = resp.get_json()
+            return {'devices': data['data']['devices']} if data and data.get('success') else {'devices': []}
     except Exception as e:
         logger.error(f"获取设备状态失败: {e}")
         return {'devices': []}
@@ -553,9 +799,10 @@ def get_latest_device_status():
 def get_latest_stats():
     """获取最新统计数据"""
     try:
-        today = datetime.now().date()
+        today = datetime.now(timezone.utc).date()
+        today_start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
         today_sessions = GameSession.select().where(
-            GameSession.start_time >= today,
+            GameSession.start_time >= today_start,
             GameSession.duration_seconds.is_null(False)
         )
         
@@ -587,7 +834,7 @@ def broadcast_update(update_type, data):
 def debug_time():
     """调试时间显示问题"""
     try:
-        from datetime import datetime
+        from datetime import datetime, timezone
         
         # 获取一些示例数据
         sessions = GameSession.select().limit(5)
@@ -600,7 +847,7 @@ def debug_time():
                 'start_time_iso': session.start_time.isoformat() if session.start_time else None,
                 'end_time_raw': str(session.end_time) if session.end_time else None,
                 'end_time_iso': session.end_time.isoformat() if session.end_time else None,
-                'server_time_now': datetime.now().isoformat(),
+                'server_time_now': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                 'created_at': session.created_at.isoformat() if session.created_at else None
             })
         
@@ -618,42 +865,22 @@ def trigger_update():
     """触发前端实时更新"""
     try:
         # 获取最新的设备状态和统计数据
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         
-        # 获取设备状态
-        all_devices = GameSession.select(
-            GameSession.player_id,
-            GameSession.player_name
-        ).distinct()
-        
-        devices = []
-        for device in all_devices:
-            latest_session = GameSession.select().where(
-                GameSession.player_id == device.player_id
-            ).order_by(GameSession.start_time.desc()).first()
-            
-            status = "offline"
-            if latest_session:
-                if latest_session.end_time is None:
-                    status = "playing"
-                else:
-                    time_diff = datetime.now() - latest_session.end_time
-                    if time_diff.total_seconds() < 300:
-                        status = "online"
-            
-            devices.append({
-                'player_id': device.player_id,
-                'player_name': device.player_name,
-                'status': status
-            })
+        # 获取设备状态（与 /api/device-status 一致）
+        with app.test_request_context():
+            device_resp = get_device_status()
+            device_json = device_resp.get_json()
+            devices = device_json['data']['devices'] if device_json and device_json.get('success') else []
         
         # 广播设备状态更新
         broadcast_update('device_update', {'devices': devices})
         
         # 获取今日统计
-        today = datetime.now().date()
+        today = datetime.now(timezone.utc).date()
+        today_start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
         today_sessions = GameSession.select().where(
-            GameSession.start_time >= today,
+            GameSession.start_time >= today_start,
             GameSession.duration_seconds.is_null(False)
         )
         

@@ -1,7 +1,9 @@
+# -*- coding: utf-8 -*-
 import json
+import os
 import paho.mqtt.client as mqtt
-from datetime import datetime
-from models import GameSession, db
+from datetime import datetime, timezone
+from models import GameSession, DeviceStatus, DeviceRegistry, normalize_ble_id, db
 import logging
 import requests
 import queue
@@ -29,6 +31,35 @@ class GameUsageTracker:
         
         # 实时更新队列
         self.update_queue = update_queue
+        # 离线阈值（秒）可配置，默认 300
+        try:
+            self.offline_window_seconds = int(os.environ.get('OFFLINE_WINDOW_SECONDS', '300'))
+        except Exception:
+            self.offline_window_seconds = 300
+
+    def _to_utc(self, value) -> datetime:
+        """将任意值规范为 UTC 有时区 datetime。
+        - 支持 datetime 或 str（ISO8601，可能带 Z）
+        - 对 naive datetime 视为 UTC
+        """
+        if value is None:
+            return None
+        if isinstance(value, str):
+            s = value
+            if s.endswith('Z'):
+                s = s[:-1] + '+00:00'
+            try:
+                dt = datetime.fromisoformat(s)
+            except Exception:
+                try:
+                    dt = datetime.strptime(s, '%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    dt = datetime.now(timezone.utc)
+        else:
+            dt = value
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
         
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -66,17 +97,61 @@ class GameUsageTracker:
             event = message.get("event")
             player_id = message.get("playerId")
             player_name = message.get("playerName")
+            ble_id_raw = message.get("bleId")
+            norm_ble = normalize_ble_id(ble_id_raw) if ble_id_raw else None
+            if ble_id_raw:
+                if norm_ble:
+                    logger.info(f"🔷 BLE ID 规范化: {ble_id_raw} -> {norm_ble}")
+                else:
+                    logger.warning(f"⚠️ BLE ID 格式不正确: {ble_id_raw}，期望格式：MicroBlocks ABC")
             
-            if not all([event, player_id, player_name]):
-                logger.warning("⚠️ 消息格式不完整")
+            # 验证消息格式
+            # 必须有 event
+            if not event:
+                logger.warning("⚠️ 消息格式不完整：缺少 event 字段")
                 return
             
+            # 验证设备标识：必须有 bleId（且在注册表中）或 playerId+playerName
+            if norm_ble:
+                # 尝试查找注册表
+                try:
+                    reg = DeviceRegistry.get(DeviceRegistry.ble_id == norm_ble, DeviceRegistry.status == 'active')
+                    # 找到了注册表映射，使用 bleId 作为 device_key，映射名称作为 display_name
+                    device_key = norm_ble
+                    display_name = f"{reg.campus_name}-{reg.project_name}"
+                    logger.info(f"✅ 使用注册表映射: {norm_ble} -> {display_name}")
+                except DeviceRegistry.DoesNotExist:
+                    # 有 bleId 但未在注册表中，需要 fallback
+                    if not player_id or not player_name:
+                        logger.warning(f"⚠️ 消息格式不完整：BLE ID {norm_ble} 未在注册表中，请提供 playerId 和 playerName 作为后备，或在后台注册表中添加该 BLE ID")
+                        return
+                    device_key = norm_ble
+                    display_name = player_name or norm_ble
+                    logger.info(f"ℹ️ BLE ID {norm_ble} 未在注册表中，使用提供的 playerName: {display_name}")
+            else:
+                # 没有 bleId 或 bleId 格式不正确，必须提供 playerId 和 playerName
+                if not player_id:
+                    logger.warning("⚠️ 消息格式不完整：缺少 playerId，且没有提供有效的 bleId")
+                    return
+                if not player_name:
+                    logger.warning("⚠️ 消息格式不完整：缺少 playerName，且没有提供有效的 bleId")
+                    return
+                device_key = player_id
+                display_name = player_name
+
+            # 任何消息先更新设备 last_seen（用映射后的 key/name）
+            self.update_device_last_seen(device_key, display_name)
+            
             if event == "game_start":
-                logger.info(f"🎮 处理游戏开始事件: {player_name}")
-                self.handle_game_start(player_id, player_name)
+                logger.info(f"🎮 处理游戏开始事件: {display_name}")
+                self.handle_game_start(device_key, display_name)
             elif event == "game_end":
-                logger.info(f"🏁 处理游戏结束事件: {player_name}")
-                self.handle_game_end(player_id, player_name)
+                logger.info(f"🏁 处理游戏结束事件: {display_name}")
+                self.handle_game_end(device_key, display_name)
+            elif event == "heartbeat":
+                logger.info(f"💓 心跳: {display_name}")
+                # last_seen 已在上面统一更新
+                self.trigger_realtime_update()
             else:
                 logger.warning(f"❓ 未知事件类型: {event}")
                 
@@ -102,9 +177,12 @@ class GameUsageTracker:
             session = GameSession.create(
                 player_id=player_id,
                 player_name=player_name,
-                start_time=datetime.now()
+                start_time=datetime.now(timezone.utc)
             )
             logger.info(f"玩家 {player_name} 开始游戏，会话ID: {session.id}")
+
+            # 更新设备当前会话
+            self.set_device_current_session(player_id, player_name, session.id)
             
             # 触发实时更新
             self.trigger_realtime_update()
@@ -124,6 +202,8 @@ class GameUsageTracker:
             if session:
                 self.end_session(session)
                 logger.info(f"玩家 {player_name} 结束游戏，游戏时长: {session.duration_seconds}秒")
+                # 清空设备当前会话
+                self.set_device_current_session(player_id, player_name, None)
             else:
                 logger.warning(f"未找到玩家 {player_name} 的活跃会话")
             
@@ -135,12 +215,44 @@ class GameUsageTracker:
     
     def end_session(self, session):
         """结束游戏会话"""
-        end_time = datetime.now()
-        duration = int((end_time - session.start_time).total_seconds())
+        end_time = datetime.now(timezone.utc)
+        start_time_utc = self._to_utc(session.start_time)
+        duration = int((end_time - start_time_utc).total_seconds())
         
         session.end_time = end_time
         session.duration_seconds = duration
         session.save()
+
+    def update_device_last_seen(self, player_id: str, player_name: str):
+        """更新设备最后心跳时间"""
+        now_utc = datetime.now(timezone.utc)
+        try:
+            device, _ = DeviceStatus.get_or_create(player_id=player_id, defaults={
+                'player_name': player_name,
+                'last_seen': now_utc,
+                'updated_at': now_utc
+            })
+            device.player_name = player_name
+            device.last_seen = now_utc
+            device.updated_at = now_utc
+            device.save()
+        except Exception as e:
+            logger.warning(f"更新设备心跳失败: {e}")
+
+    def set_device_current_session(self, player_id: str, player_name: str, session_id):
+        """设置设备当前会话ID（开始/结束时调用）"""
+        now_utc = datetime.now(timezone.utc)
+        try:
+            device, _ = DeviceStatus.get_or_create(player_id=player_id, defaults={
+                'player_name': player_name,
+                'updated_at': now_utc
+            })
+            device.player_name = player_name
+            device.current_session_id = session_id
+            device.updated_at = now_utc
+            device.save()
+        except Exception as e:
+            logger.warning(f"更新设备当前会话失败: {e}")
     
     def trigger_realtime_update(self):
         """触发前端实时更新"""
@@ -149,7 +261,7 @@ class GameUsageTracker:
                 # 直接通过队列发送更新信号
                 update_data = {
                     'type': 'mqtt_update',
-                    'timestamp': datetime.now().isoformat()
+                    'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
                 }
                 self.update_queue.put(update_data)
                 logger.info("✅ 成功触发实时更新（队列）")
