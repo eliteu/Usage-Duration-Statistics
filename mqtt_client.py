@@ -2,7 +2,7 @@
 import json
 import os
 import paho.mqtt.client as mqtt
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from models import GameSession, DeviceStatus, DeviceRegistry, normalize_ble_id, db
 import logging
 import requests
@@ -139,12 +139,21 @@ class GameUsageTracker:
                 device_key = player_id
                 display_name = player_name
 
+            # 先获取旧的设备状态（用于计算异常断线的真实时长）
+            old_last_seen = None
+            try:
+                old_device = DeviceStatus.get_or_none(DeviceStatus.player_id == device_key)
+                if old_device:
+                    old_last_seen = self._to_utc(old_device.last_seen)
+            except Exception:
+                pass
+
             # 任何消息先更新设备 last_seen（用映射后的 key/name）
             self.update_device_last_seen(device_key, display_name)
             
             if event == "game_start":
                 logger.info(f"🎮 处理游戏开始事件: {display_name}")
-                self.handle_game_start(device_key, display_name)
+                self.handle_game_start(device_key, display_name, old_last_seen)
             elif event == "game_end":
                 logger.info(f"🏁 处理游戏结束事件: {display_name}")
                 self.handle_game_end(device_key, display_name)
@@ -160,7 +169,7 @@ class GameUsageTracker:
         except Exception as e:
             logger.error(f"❌ 处理消息时出错: {e}")
     
-    def handle_game_start(self, player_id, player_name):
+    def handle_game_start(self, player_id, player_name, old_last_seen=None):
         """处理游戏开始事件"""
         try:
             # 检查是否有未结束的会话
@@ -171,7 +180,7 @@ class GameUsageTracker:
             
             if existing_session:
                 logger.warning(f"玩家 {player_name} 有未结束的会话，先结束之前的会话")
-                self.end_session(existing_session)
+                self.end_session(existing_session, is_forced=True, forced_end_time=old_last_seen)
             
             # 创建新的游戏会话
             session = GameSession.create(
@@ -213,12 +222,39 @@ class GameUsageTracker:
         except Exception as e:
             logger.error(f"处理游戏结束事件时出错: {e}")
     
-    def end_session(self, session):
+    def end_session(self, session, is_forced=False, forced_end_time=None):
         """结束游戏会话"""
-        end_time = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
         start_time_utc = self._to_utc(session.start_time)
+        
+        # 默认使用当前时间作为结束时间
+        end_time = now
+        
+        # 如果是强制结束（被新游戏挤掉），尝试使用上一次的心跳时间
+        if is_forced:
+            if forced_end_time and forced_end_time > start_time_utc:
+                # 如果有有效的心跳时间（晚于开始时间），使用心跳时间作为结束时间
+                # 这能准确反映设备实际断线的时间
+                end_time = forced_end_time
+                logger.info(f"使用最后心跳时间作为结束时间: {end_time}")
+            else:
+                # 如果没有有效心跳，使用最大时长封顶策略
+                # 比如：如果隔了几天才重连，且没发心跳，我们假设它玩了最多 30 分钟
+                MAX_NO_HEARTBEAT_DURATION = 30 * 60  # 30分钟
+                
+                # 如果实际流逝时间超过了封顶值，就用封顶值
+                raw_duration = (now - start_time_utc).total_seconds()
+                if raw_duration > MAX_NO_HEARTBEAT_DURATION:
+                    end_time = start_time_utc + timedelta(seconds=MAX_NO_HEARTBEAT_DURATION)
+                    logger.warning(f"无有效心跳且时长过长，修正为封顶时长 {MAX_NO_HEARTBEAT_DURATION} 秒")
+        
+        # 计算最终时长
         duration = int((end_time - start_time_utc).total_seconds())
         
+        # 防止负数（理论上不会发生）
+        if duration < 0:
+            duration = 0
+            
         session.end_time = end_time
         session.duration_seconds = duration
         session.save()
