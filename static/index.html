@@ -502,6 +502,7 @@
                     <option value="">全部项目</option>
                 </select>
                 <button onclick="clearFilters()" style="margin-left: 10px;">清除筛选</button>
+                <button onclick="exportCsv()" style="margin-left: 10px; background: #28a745;">📤 导出 CSV</button>
             </div>
 
             <!-- 时间段统计摘要 -->
@@ -771,6 +772,48 @@
             document.getElementById('filterCampus').value = '';
             document.getElementById('filterProject').value = '';
             onCampusChange(); // 更新项目列表
+        }
+
+        function exportCsv() {
+            // 获取当前的筛选条件
+            const chartPeriod = document.getElementById('chartPeriod').value;
+            const campus = document.getElementById('filterCampus').value;
+            const project = document.getElementById('filterProject').value;
+            
+            const params = new URLSearchParams();
+            
+            // 处理时间范围
+            if (chartPeriod === 'custom') {
+                const startDate = document.getElementById('startDate').value;
+                const endDate = document.getElementById('endDate').value;
+                if (startDate && endDate) {
+                    params.append('start_date', startDate);
+                    params.append('end_date', endDate);
+                } else {
+                    alert('请选择开始和结束日期');
+                    return;
+                }
+            } else {
+                // 计算日期范围
+                const days = parseInt(chartPeriod);
+                const end = new Date();
+                const start = new Date();
+                start.setDate(end.getDate() - (days - 1));
+                
+                params.append('start_date', start.toISOString().split('T')[0]);
+                params.append('end_date', end.toISOString().split('T')[0]);
+            }
+            
+            // 添加筛选条件
+            if (campus) {
+                params.append('campus_name', campus);
+            }
+            if (project) {
+                params.append('project_name', project);
+            }
+            
+            // 触发下载
+            window.location.href = `${API_BASE}/export-csv?${params.toString()}`;
         }
 
         async function loadChart() {

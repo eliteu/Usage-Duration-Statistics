@@ -148,21 +148,26 @@ class GameUsageTracker:
             except Exception:
                 pass
 
-            # 任何消息先更新设备 last_seen（用映射后的 key/name）
-            self.update_device_last_seen(device_key, display_name)
-            
+            # 如果是 game_start，必须在更新 last_seen 之前处理，否则 old_last_seen 就失效了
+            # 这是为了解决“先发 heartbeat 立即发 game_start”导致的时长统计错误问题
             if event == "game_start":
                 logger.info(f"🎮 处理游戏开始事件: {display_name}")
                 self.handle_game_start(device_key, display_name, old_last_seen)
-            elif event == "game_end":
-                logger.info(f"🏁 处理游戏结束事件: {display_name}")
-                self.handle_game_end(device_key, display_name)
-            elif event == "heartbeat":
-                logger.info(f"💓 心跳: {display_name}")
-                # last_seen 已在上面统一更新
-                self.trigger_realtime_update()
+                # game_start 处理完后再更新心跳，这样新会话的开始才算“活着”
+                self.update_device_last_seen(device_key, display_name)
             else:
-                logger.warning(f"❓ 未知事件类型: {event}")
+                # 其他消息（heartbeat, game_end 等）先更新心跳
+                self.update_device_last_seen(device_key, display_name)
+                
+                if event == "game_end":
+                    logger.info(f"🏁 处理游戏结束事件: {display_name}")
+                    self.handle_game_end(device_key, display_name)
+                elif event == "heartbeat":
+                    logger.info(f"💓 心跳: {display_name}")
+                    # last_seen 已在上面统一更新
+                    self.trigger_realtime_update()
+                else:
+                    logger.warning(f"❓ 未知事件类型: {event}")
                 
         except json.JSONDecodeError as e:
             logger.error(f"❌ JSON 解析错误: {e}, 原始消息: {msg.payload.decode()}")
@@ -254,7 +259,7 @@ class GameUsageTracker:
         # 防止负数（理论上不会发生）
         if duration < 0:
             duration = 0
-            
+        
         session.end_time = end_time
         session.duration_seconds = duration
         session.save()

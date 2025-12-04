@@ -5,6 +5,9 @@ import json
 import time
 import threading
 import queue
+import csv
+import io
+import codecs
 
 import os
 from models import GameSession, DeviceStatus, DeviceRegistry, normalize_ble_id, db
@@ -222,16 +225,127 @@ def delete_device_registry(ble_id):
     except Exception as e:
         logger.error(f"删除设备注册记录失败: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/export-csv', methods=['GET'])
+def export_csv():
+    """导出统计数据为 CSV"""
+    try:
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+        campus_name = request.args.get('campus_name')
+        project_name = request.args.get('project_name')
         
-        return jsonify({
-            'success': True,
-            'data': result,
-            'page': page,
-            'per_page': per_page
-        })
+        # 确定时间范围
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        else:
+            # 默认最近7天
+            end_date = datetime.now(timezone.utc).date()
+            start_date = end_date - timedelta(days=6)
+        
+        # 转换为查询所需的 datetime
+        query_start = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+        # end_date 是包含的，所以要加1天作为不包含的上限
+        query_end = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+        
+        # 获取所有注册设备信息，构建映射表
+        # key: ble_id (或 player_id), value: {'campus': xx, 'project': xx}
+        registries = DeviceRegistry.select()
+        device_map = {}
+        for reg in registries:
+            device_map[reg.ble_id] = {
+                'campus': reg.campus_name,
+                'project': reg.project_name
+            }
+            
+        # 查询时间范围内的所有有效会话
+        query = GameSession.select().where(
+            GameSession.start_time >= query_start,
+            GameSession.start_time < query_end,
+            GameSession.duration_seconds.is_null(False)
+        )
+        
+        # 聚合统计数据
+        # key: (campus, project), value: {'total_seconds': 0, 'count': 0}
+        stats = {}
+        
+        for session in query:
+            # 确定校区和项目
+            campus = "未知校区"
+            project = "未知项目"
+            
+            # 尝试从注册表中匹配
+            if session.player_id in device_map:
+                campus = device_map[session.player_id]['campus']
+                project = device_map[session.player_id]['project']
+            else:
+                # 尝试解析 player_name (如果格式是 "校区-项目")
+                if session.player_name and '-' in session.player_name:
+                    parts = session.player_name.split('-', 1)
+                    # 简单的启发式判断
+                    if len(parts) == 2:
+                        campus = parts[0]
+                        project = parts[1]
+            
+            # 筛选逻辑
+            if campus_name and campus != campus_name:
+                continue
+            if project_name and project != project_name:
+                continue
+                
+            key = (campus, project)
+            if key not in stats:
+                stats[key] = {'total_seconds': 0, 'count': 0}
+            
+            stats[key]['total_seconds'] += session.duration_seconds
+            stats[key]['count'] += 1
+            
+        # 转换为列表并排序
+        # 排序规则：1. 校区 (字母序) 2. 使用时间 (降序)
+        result_list = []
+        for (campus, project), data in stats.items():
+            result_list.append({
+                'campus': campus,
+                'project': project,
+                'total_seconds': data['total_seconds'],
+                'count': data['count']
+            })
+            
+        # 执行排序
+        result_list.sort(key=lambda x: (x['campus'], -x['total_seconds']))
+        
+        # 生成 CSV
+        output = io.StringIO()
+        # 写入 BOM 防止中文乱码
+        output.write(u'\ufeff')
+        writer = csv.writer(output)
+        
+        # 写入表头
+        writer.writerow(['校区', '项目', '总使用时长(分钟)', '总使用时长(小时)', '游戏次数'])
+        
+        # 写入数据
+        for row in result_list:
+            minutes = round(row['total_seconds'] / 60, 1)
+            hours = round(row['total_seconds'] / 3600, 2)
+            writer.writerow([
+                row['campus'],
+                row['project'],
+                minutes,
+                hours,
+                row['count']
+            ])
+            
+        # 创建响应
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-disposition": f"attachment; filename=usage_stats_{start_date}_{end_date}.csv"}
+        )
         
     except Exception as e:
-        logger.error(f"获取会话列表时出错: {e}")
+        logger.error(f"导出CSV失败: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/stats', methods=['GET'])
